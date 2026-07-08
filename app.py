@@ -1,6 +1,7 @@
 import math
 import random
 import streamlit as st
+import io
 
 st.set_page_config(page_title="Class Tournament Brackets", layout="wide")
 
@@ -137,11 +138,11 @@ def build_winners_bracket(tournament, class_name, players, tdata):
             mid = f"{class_name}|WB|R{round_num}|M{i // 2 + 1}"
             winner = match_winner(tdata, mid, p1, p2)
             match_rows.append((mid, p1, p2, winner))
-            next_round.append(winner if winner else f"Winner R{round_num}M{i // 2 + 1}")
+            next_round.append(winner if winner else f"TBD_W{round_num}_{i // 2 + 1}")
         rounds.append(match_rows)
         current = next_round
         round_num += 1
-    champion = current[0] if current else ""
+    champion = current[0] if current and not current[0].startswith("TBD") else ""
     return rounds, champion
 
 
@@ -152,7 +153,7 @@ def draw_match(tournament, tdata, mid, p1, p2, title):
         if p1 == "BYE" or p2 == "BYE":
             st.caption(f"Automatic winner: {match_winner(tdata, mid, p1, p2)}")
             return match_winner(tdata, mid, p1, p2)
-        if p1.startswith("Winner") or p2.startswith("Winner"):
+        if p1.startswith("Winner") or p2.startswith("Winner") or p1.startswith("TBD") or p2.startswith("TBD"):
             st.caption("Complete earlier matches first.")
             return ""
         opts = ["", p1, p2]
@@ -167,6 +168,107 @@ def draw_match(tournament, tdata, mid, p1, p2, title):
         if loser:
             st.caption(f"Loser moves to losers bracket: {loser}")
         return winner
+
+
+def draw_bracket_tree(rounds, class_name):
+    """Generate a text-based tree representation of the bracket"""
+    lines = []
+    lines.append(f"=== {class_name} Bracket Tree ===")
+    lines.append("")
+    
+    for round_idx, matches in enumerate(rounds, start=1):
+        lines.append(f"Round {round_idx}:")
+        for match_idx, (mid, p1, p2, winner) in enumerate(matches):
+            winner_text = winner if winner else "TBD"
+            lines.append(f"  Match {match_idx}: {p1} vs {p2} -> Winner: {winner_text}")
+        lines.append("")
+    
+    return "\n".join(lines)
+
+
+def draw_bracket_graph(rounds, class_name):
+    """Generate a simple visual graph representation of the bracket"""
+    lines = []
+    lines.append(f"=== {class_name} Bracket Graph ===")
+    lines.append("")
+    
+    # Find max matches in any round for alignment
+    max_matches = max([len(matches) for matches in rounds]) if rounds else 0
+    
+    for round_idx, matches in enumerate(rounds, start=1):
+        padding = " " * (round_idx - 1) * 4
+        lines.append(f"{padding}Round {round_idx}:")
+        
+        for match_idx, (mid, p1, p2, winner) in enumerate(matches):
+            winner_text = winner if winner else "TBD"
+            indent = " " * (round_idx - 1) * 4 + "  "
+            lines.append(f"{indent}├── {p1} vs {p2}")
+            lines.append(f"{indent}│   └── Winner: {winner_text}")
+        
+        lines.append("")
+    
+    return "\n".join(lines)
+
+
+def generate_full_bracket_text(tournament, tdata):
+    """Generate complete text representation of all brackets"""
+    output_parts = []
+    output_parts.append(f"TOURNAMENT: {tournament}")
+    output_parts.append("=" * 50)
+    output_parts.append("")
+    
+    class_champions = {}
+    
+    for class_name in CLASS_ORDER:
+        players = tdata["entrants"].get(class_name, [])
+        if len(players) < 2:
+            output_parts.append(f"{class_name}: Not enough players (need at least 2)")
+            output_parts.append("")
+            continue
+        
+        rounds, champion = build_winners_bracket(tournament, class_name, players, tdata)
+        output_parts.append(draw_bracket_tree(rounds, class_name))
+        output_parts.append(draw_bracket_graph(rounds, class_name))
+        output_parts.append(f"Class Champion: {champion if champion else 'TBD'}")
+        output_parts.append("")
+        output_parts.append("-" * 40)
+        output_parts.append("")
+        class_champions[class_name] = champion
+    
+    # Add overall finals if available
+    available = {c: p for c, p in class_champions.items() if p}
+    if len(available) >= 3:
+        output_parts.append("OVERALL FINALS")
+        output_parts.append("-" * 20)
+        names = list(available.values())
+        output_parts.append(f"Finalists: {', '.join(f'{c}: {p}' for c, p in available.items())}")
+        output_parts.append("")
+        
+        # Show round-robin finals matches
+        pairs = [(names[0], names[1]), (names[0], names[2]), (names[1], names[2])]
+        output_parts.append("Finals Matches (Round Robin):")
+        for i, (p1, p2) in enumerate(pairs, start=1):
+            mid = f"OVERALL|{i}"
+            winner = tdata["winners"].get(mid, "")
+            winner_text = winner if winner else "TBD"
+            output_parts.append(f"  Match {i}: {p1} vs {p2} -> Winner: {winner_text}")
+        
+        # Show standings if available
+        wins = {n: 0 for n in names}
+        for i in range(1, 4):
+            mid = f"OVERALL|{i}"
+            winner = tdata["winners"].get(mid, "")
+            if winner in wins:
+                wins[winner] += 1
+        
+        if any(wins.values()):
+            output_parts.append("")
+            output_parts.append("Current Standings:")
+            sorted_players = sorted(wins.items(), key=lambda x: (-x[1], x[0]))
+            for i, (player, win_count) in enumerate(sorted_players, start=1):
+                output_parts.append(f"  #{i}: {player} ({win_count} wins)")
+    
+    return "\n".join(output_parts)
 
 
 def draw_class_bracket(tournament, class_name, players, tdata):
@@ -246,8 +348,87 @@ def overall_finals(tournament, tdata, class_champions):
         st.success(f"1st: {placements[0]}  |  2nd: {placements[1]}  |  3rd: {placements[2]}")
 
 
+def display_bracket_visualization(tournament, tdata):
+    """Display bracket visualization with tree/graph representations"""
+    st.subheader("📊 Bracket Visualization")
+    
+    # Create tabs for different visualization types
+    viz_tabs = st.tabs(["Tree View", "Graph View", "Complete Text Export"])
+    
+    full_text = generate_full_bracket_text(tournament, tdata)
+    
+    with viz_tabs[0]:
+        st.markdown("### Tree Structure")
+        st.text(full_text)
+        
+        # Download button for tree view
+        st.download_button(
+            label="📥 Download Bracket Tree",
+            data=full_text,
+            file_name=f"{tournament.lower()}_bracket_tree.txt",
+            mime="text/plain",
+            key="download_tree"
+        )
+    
+    with viz_tabs[1]:
+        st.markdown("### Graph Structure")
+        
+        # Generate graph view for each class
+        graph_output = []
+        graph_output.append(f"TOURNAMENT: {tournament}")
+        graph_output.append("=" * 50)
+        
+        for class_name in CLASS_ORDER:
+            players = tdata["entrants"].get(class_name, [])
+            if len(players) >= 2:
+                rounds, _ = build_winners_bracket(tournament, class_name, players, tdata)
+                graph_output.append(draw_bracket_graph(rounds, class_name))
+            else:
+                graph_output.append(f"{class_name}: Not enough players")
+            graph_output.append("")
+        
+        # Add overall finals info
+        class_champions = {}
+        for class_name in CLASS_ORDER:
+            players = tdata["entrants"].get(class_name, [])
+            if len(players) >= 2:
+                _, champion = build_winners_bracket(tournament, class_name, players, tdata)
+                class_champions[class_name] = champion if champion and not champion.startswith("Winner") and champion != "BYE" else ""
+        
+        available = {c: p for c, p in class_champions.items() if p}
+        if len(available) >= 3:
+            graph_output.append("OVERALL FINALS:")
+            names = list(available.values())
+            graph_output.append(f"  Finalists: {', '.join(names)}")
+        
+        graph_text = "\n".join(graph_output)
+        st.text(graph_text)
+        
+        # Download button for graph view
+        st.download_button(
+            label="📥 Download Bracket Graph",
+            data=graph_text,
+            file_name=f"{tournament.lower()}_bracket_graph.txt",
+            mime="text/plain",
+            key="download_graph"
+        )
+    
+    with viz_tabs[2]:
+        st.markdown("### Complete Export")
+        st.text(full_text)
+        
+        # Download button for complete export
+        st.download_button(
+            label="📥 Download Complete Bracket Export",
+            data=full_text,
+            file_name=f"{tournament.lower()}_complete_bracket.txt",
+            mime="text/plain",
+            key="download_complete"
+        )
+
+
 def main():
-    st.title("Mancala and Chess Tournament Brackets")
+    st.title("🏆 Mancala and Chess Tournament Brackets")
     st.caption("Toggle between tournaments, adjust entrants with dropdowns, run class brackets, then finish with overall finals.")
     tournament = st.sidebar.radio("Tournament", TOURNAMENTS)
     tdata = get_tournament(tournament)
@@ -263,7 +444,11 @@ def main():
             tdata["winners"].clear()
             st.rerun()
 
-    tab_rosters, tab_brackets, tab_finals = st.tabs(["Player dropdowns", "Class brackets", "Overall finals"])
+    # Add visualization tab
+    tab_rosters, tab_brackets, tab_finals, tab_visualization = st.tabs(
+        ["Player dropdowns", "Class brackets", "Overall finals", "📊 Bracket Visualization"]
+    )
+    
     with tab_rosters:
         for c in CLASS_ORDER:
             entrant_editor(tournament, c, tdata)
@@ -275,13 +460,17 @@ def main():
             with st.expander(c, expanded=True):
                 champ, _ = draw_class_bracket(tournament, c, tdata["entrants"].get(c, []), tdata)
                 class_champions[c] = champ
+    
     with tab_finals:
-        # Recalculate champions after bracket interactions.
+        # Recalculate champions after bracket interactions
         class_champions = {}
         for c in CLASS_ORDER:
             _, champ = build_winners_bracket(tournament, c, tdata["entrants"].get(c, []), tdata)
             class_champions[c] = champ if champ and not str(champ).startswith("Winner") and champ != "BYE" else ""
         overall_finals(tournament, tdata, class_champions)
+    
+    with tab_visualization:
+        display_bracket_visualization(tournament, tdata)
 
 
 if __name__ == "__main__":
